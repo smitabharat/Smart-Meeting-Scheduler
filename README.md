@@ -1,5 +1,6 @@
 # Smart-Meeting-Scheduler
 A simple Go-based meeting scheduler using the **Fiber** web framework. This API allows users to schedule meetings by finding common available time slots across participants’ calendars.
+This service will accept a request to schedule a new meeting for a list of participants and will find the optimal time slot based on their existing calendars and a set of scheduling preferences.
 ## Table of Contents
 
 - [Architecture & Design](#architecture--design)
@@ -50,7 +51,7 @@ POST /schedule-http://localhost:8080/schedule
 Request Body:
 
 {
-  "participantIds": ["u1", "u2"],
+  "participantIds": ["user1", "user2"],
   "durationMinutes": 30,
   "timeRange": {
     "start": "2025-08-01T09:00:00Z",
@@ -60,4 +61,4 @@ Request Body:
 
 2. Get User Calendar
 
-GET -(http://localhost:8080/users/u2/calendar?start=2025-08-01T00:00:00Z&end=2025-08-05T23:59:59Z)
+GET -(http://localhost:8080/users/user2/calendar?start=2025-08-01T00:00:00Z&end=2025-08-05T23:59:59Z)
