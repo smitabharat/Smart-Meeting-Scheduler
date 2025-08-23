@@ -1,6 +1,7 @@
 package main
 
 import (
+	"math/rand"
 	"strings"
 	"time"
 
@@ -38,6 +39,26 @@ type MeetingResponse struct {
 	ParticipantIds []string `json:"participantIds"`
 	StartTime      string   `json:"startTime"`
 	EndTime        string   `json:"endTime"`
+}
+
+// --------- Preferences ---------
+
+type SchedulingPreferences struct {
+	EarliestPreferred   bool // prefer earlier slots
+	BackToBackPreferred bool // prefer consecutive meetings
+	BufferMinutes       int  // minimum buffer before/after meetings
+	WorkingHourStart    int  // e.g., 9
+	WorkingHourEnd      int  // e.g., 17
+	PreferFairness      bool // balance across participants
+}
+
+var defaultPrefs = SchedulingPreferences{
+	EarliestPreferred:   true,
+	BackToBackPreferred: true,
+	BufferMinutes:       15,
+	WorkingHourStart:    9,
+	WorkingHourEnd:      17,
+	PreferFairness:      true,
 }
 
 // --------- In-memory DB ---------
@@ -225,39 +246,65 @@ func findCommonSlots(participantIds []string, periodStart, periodEnd time.Time, 
 
 func scoreAndSelectSlot(slots []TimeSlot, participantIds []string) TimeSlot {
 	type ScoredSlot struct {
-		Slot  TimeSlot
-		Score int
+		Slot     TimeSlot
+		Score    int
+		Fairness int // fairness score (gap distribution across users)
 	}
+
 	var scored []ScoredSlot
 	for _, slot := range slots {
 		score := 0
 		hour := slot.Start.Hour()
 
-		// Prefer earlier slots
-		score += hour * 2
-
-		// Working hours boost
-		if hour < 9 || hour > 17 {
-			score += 20
+		// 1. Prefer Earlier Slots
+		if defaultPrefs.EarliestPreferred {
+			score += hour * 2
 		}
 
-		// Buffer + gap penalties
+		// 2. Working Hours Preference
+		if hour < defaultPrefs.WorkingHourStart || hour >= defaultPrefs.WorkingHourEnd {
+			score += 30 // strong penalty
+		}
+
+		// 3. Buffer and Back-to-Back
 		for _, id := range participantIds {
 			for _, e := range events {
 				if e.UserID == id {
-					if abs(int(slot.Start.Sub(e.EndTime).Minutes())) < 15 ||
-						abs(int(e.StartTime.Sub(slot.End).Minutes())) < 15 {
+					beforeGap := int(slot.Start.Sub(e.EndTime).Minutes())
+					afterGap := int(e.StartTime.Sub(slot.End).Minutes())
+
+					// Respect buffer
+					if abs(beforeGap) < defaultPrefs.BufferMinutes ||
+						abs(afterGap) < defaultPrefs.BufferMinutes {
+						score += 15
+					}
+
+					// Minimize awkward small gaps (10–30 min)
+					if beforeGap > 0 && beforeGap < 30 {
 						score += 10
 					}
-					gap := int(slot.Start.Sub(e.EndTime).Minutes())
-					if gap > 0 && gap < 30 {
-						score += 5
+
+					// Reward back-to-back if preferred
+					if defaultPrefs.BackToBackPreferred {
+						if beforeGap == 0 || afterGap == 0 {
+							score -= 5 // small bonus
+						}
 					}
 				}
 			}
 		}
 
-		scored = append(scored, ScoredSlot{slot, score})
+		// 4. Fairness: distribute inconvenience
+		fairness := 0
+		if defaultPrefs.PreferFairness {
+			// Penalize if only one user has to do early/late hours
+			if slot.Start.Hour() < 9 || slot.Start.Hour() >= 18 {
+				fairness += len(participantIds)
+			}
+			score += fairness * 5
+		}
+
+		scored = append(scored, ScoredSlot{Slot: slot, Score: score, Fairness: fairness})
 	}
 
 	// Find minimum score
@@ -269,12 +316,30 @@ func scoreAndSelectSlot(slots []TimeSlot, participantIds []string) TimeSlot {
 	}
 
 	// Collect all slots with minimum score
-	var bestSlots []TimeSlot
+	var bestSlots []ScoredSlot
 	for _, s := range scored {
 		if s.Score == minScore {
-			bestSlots = append(bestSlots, s.Slot)
+			bestSlots = append(bestSlots, s)
 		}
 	}
-	return bestSlots[0]
-}
 
+	// ---- Tie-Breaking Strategy ----
+	if len(bestSlots) == 1 {
+		return bestSlots[0].Slot
+	}
+
+	// Option 1: Fairness-based (pick the one with lowest fairness penalty)
+	if defaultPrefs.PreferFairness {
+		best := bestSlots[0]
+		for _, s := range bestSlots {
+			if s.Fairness < best.Fairness {
+				best = s
+			}
+		}
+		return best.Slot
+	}
+
+	// Option 2: Random if tie still remains
+	rand.Seed(time.Now().UnixNano())
+	return bestSlots[rand.Intn(len(bestSlots))].Slot
+}
